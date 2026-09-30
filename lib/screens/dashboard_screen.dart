@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -56,12 +57,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
   int waterLevel = 0;
   bool motionDetected = false;
 
-  double ultrasonicDistance = 0.0;
+  // =====================================================
+  // ULTRASONIC
+  // =====================================================
+
+  // -1 หมายถึงยังไม่มีข้อมูล
+  double ultrasonicDistance = -1.0;
 
   bool fanRunning = false;
   bool mistRunning = false;
 
   bool deviceOnline = false;
+
+  // =====================================================
+  // TIMERS
+  // =====================================================
+
+  Timer? waterNotificationTimer;
+
+  // ดึง Ultrasonic จาก Supabase ทุก 5 วินาที
+  Timer? ultrasonicRefreshTimer;
 
   // =====================================================
   // INIT
@@ -70,7 +85,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
+
     loadData();
+
+// ตรวจสอบระดับน้ำทุก 5 วินาที
+waterNotificationTimer = Timer.periodic(
+  const Duration(seconds: 5),
+  (_) async {
+    await checkWaterLevelAndNotify();
+  },
+);
+    // =====================================================
+    // ดึง Ultrasonic จาก Supabase ทุก 5 วินาที
+    // =====================================================
+
+    ultrasonicRefreshTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) async {
+        await loadUltrasonicData();
+      },
+    );
+  }
+
+  @override
+  void dispose() {
+    waterNotificationTimer?.cancel();
+    waterNotificationTimer = null;
+
+    ultrasonicRefreshTimer?.cancel();
+    ultrasonicRefreshTimer = null;
+
+    super.dispose();
   }
 
   // =====================================================
@@ -88,13 +133,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
       // ---------------------------------------------
       // โหลด device_controls
       // ---------------------------------------------
-       
+
       final List<dynamic> controlRows = await supabase
           .from('device_controls')
           .select()
           .limit(1);
 
-      debugPrint('device_controls rows = $controlRows');
+      debugPrint(
+        'device_controls rows = $controlRows',
+      );
 
       if (controlRows.isEmpty) {
         throw Exception(
@@ -110,30 +157,44 @@ class _DashboardScreenState extends State<DashboardScreen> {
       // กำหนด deviceId ก่อน
       // ---------------------------------------------
 
-      deviceId = controlData['device_id']?.toString();
+      deviceId =
+          controlData['device_id']?.toString();
 
-      debugPrint('DEVICE ID = $deviceId');
+      debugPrint(
+        'DEVICE ID = $deviceId',
+      );
 
       // ---------------------------------------------
       // โหลด relay_control
       //
       // relay1 = FAN
-      // relay2 = MIST
+      // relay6 = MIST
       // ---------------------------------------------
 
       if (deviceId != null) {
-        final relayData = await supabase
+        final relayRows = await supabase
             .from('relay_control')
             .select('relay1, relay6')
-            .eq('device_id', deviceId!)
-            .maybeSingle();
+            .eq(
+              'device_id',
+              deviceId!,
+            )
+            .limit(1);
 
-        debugPrint('RELAY CONTROL = $relayData');
+        debugPrint(
+          'RELAY CONTROL = $relayRows',
+        );
 
-        if (relayData != null && mounted) {
+        if (relayRows.isNotEmpty && mounted) {
+          final relayData =
+              relayRows.first as Map<String, dynamic>;
+
           setState(() {
-            fanOn = relayData['relay1'] == true;
-            mistOn = relayData['relay6'] == true;
+            fanOn =
+                relayData['relay1'] == true;
+
+            mistOn =
+                relayData['relay6'] == true;
           });
         }
       }
@@ -146,7 +207,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
           controlData['power'] == true;
 
       final String mode =
-          controlData['mode']?.toString() ?? 'manual';
+          controlData['mode']?.toString() ??
+              'manual';
 
       final int loadedFanLevel =
           (controlData['fan_level'] as num?)
@@ -168,24 +230,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
       if (mounted) {
         setState(() {
-          // ใช้ relay_control เป็นตัวกำหนด ON/OFF
-          // ถ้า deviceId ไม่มี ค่อยใช้ device_controls
-
           if (deviceId == null) {
             fanOn = power;
-            mistOn = loadedMistLevel > 0;
+            mistOn =
+                loadedMistLevel > 0;
           }
 
-          automaticMode = mode == 'auto';
+          automaticMode =
+              mode == 'auto';
 
-          fanLevel = loadedFanLevel;
-          mistLevel = loadedMistLevel;
+          fanLevel =
+              loadedFanLevel;
 
-          humiditySetting = loadedHumidity;
+          mistLevel =
+              loadedMistLevel;
 
-          emergencyStop = loadedEmergency;
+          humiditySetting =
+              loadedHumidity;
 
-          // ถ้า Emergency เปิดอยู่ ให้สถานะเป็น OFF
+          emergencyStop =
+              loadedEmergency;
+
           if (emergencyStop) {
             fanOn = false;
             mistOn = false;
@@ -200,60 +265,114 @@ class _DashboardScreenState extends State<DashboardScreen> {
       // ---------------------------------------------
 
       if (deviceId != null) {
-        final statusData = await supabase
-            .from('device_status')
-            .select()
-            .eq('device_id', deviceId!)
-            .maybeSingle();
+        final List<dynamic> statusRows =
+            await supabase
+                .from('device_status')
+                .select()
+                .eq(
+                  'device_id',
+                  deviceId!,
+                )
+                .order(
+                  'last_seen',
+                  ascending: false,
+                )
+                .limit(1);
 
-        if (statusData != null && mounted) {
+        debugPrint(
+          'DEVICE STATUS = $statusRows',
+        );
+
+        if (statusRows.isNotEmpty &&
+            mounted) {
+          final statusData =
+              statusRows.first
+                  as Map<String, dynamic>;
+
           setState(() {
             temperature =
-                (statusData['temperature'] as num?)
+                (statusData['temperature']
+                            as num?)
                         ?.toDouble() ??
                     temperature;
 
             humidity =
-                (statusData['humidity'] as num?)
+                (statusData['humidity']
+                            as num?)
                         ?.toDouble() ??
                     humidity;
 
             waterLevel =
-                (statusData['water_level'] as num?)
+                (statusData['water_level']
+                            as num?)
                         ?.toInt() ??
                     0;
 
             motionDetected =
-                statusData['motion_detected'] == true;
+                statusData[
+                        'motion_detected'] ==
+                    true;
 
             fanRunning =
-                statusData['fan_running'] == true;
+                statusData[
+                        'fan_running'] ==
+                    true;
 
             mistRunning =
-                statusData['mist_running'] == true;
+                statusData[
+                        'mist_running'] ==
+                    true;
 
             deviceOnline =
-                statusData['last_seen'] != null;
+                statusData['last_seen'] !=
+                    null;
           });
         }
       }
 
-      
+      // =====================================================
+      // โหลด ULTRASONIC
+      // =====================================================
 
-      debugPrint('================================');
-      debugPrint('Supabase โหลดข้อมูลสำเร็จ');
-      debugPrint('DEVICE ID = $deviceId');
-      debugPrint('FAN RELAY1 = $fanOn');
-      debugPrint('MIST RELAY2 = $mistOn');
+      await loadUltrasonicData();
+
+      debugPrint(
+        '================================',
+      );
+      debugPrint(
+        'Supabase โหลดข้อมูลสำเร็จ',
+      );
+      debugPrint(
+        'DEVICE ID = $deviceId',
+      );
+      debugPrint(
+        'FAN RELAY1 = $fanOn',
+      );
+      debugPrint(
+        'MIST RELAY6 = $mistOn',
+      );
       debugPrint(
         'MODE = ${automaticMode ? "auto" : "manual"}',
       );
-      debugPrint('FAN LEVEL = $fanLevel');
-      debugPrint('MIST LEVEL = $mistLevel');
-      debugPrint('HUMIDITY = $humiditySetting');
-      debugPrint('================================');
+      debugPrint(
+        'FAN LEVEL = $fanLevel',
+      );
+      debugPrint(
+        'MIST LEVEL = $mistLevel',
+      );
+      debugPrint(
+        'HUMIDITY = $humiditySetting',
+      );
+      debugPrint(
+        'ULTRASONIC = $ultrasonicDistance cm',
+      );
+      debugPrint(
+        '================================',
+      );
     } catch (e) {
-      debugPrint('LOAD SUPABASE ERROR: $e');
+      debugPrint(
+        'LOAD SUPABASE ERROR: $e',
+      );
 
       if (mounted) {
         showMessage(
@@ -268,55 +387,229 @@ class _DashboardScreenState extends State<DashboardScreen> {
         });
       }
     }
-// =====================================================
-// LOAD ULTRASONIC + DETECT PERSON
-// =====================================================
+  }
 
-if (deviceId != null) {
-  final ultrasonicData = await supabase
-      .from('sensor_readings')
-      .select('distance_cm, recorded_at')
-      .eq('device_id', deviceId!)
-      .order('recorded_at', ascending: false)
-      .limit(1)
-      .maybeSingle();
+  // =====================================================
+  // LOAD LATEST ULTRASONIC FROM SUPABASE
+  //
+  // ESP32
+  //   ↓
+  // sensor_readings
+  //   ↓
+  // Flutter
+  //
+  // ตาราง:
+  // sensor_readings
+  // device_id
+  // distance_cm
+  // recorded_at
+  // =====================================================
 
-  debugPrint('ULTRASONIC DATA = $ultrasonicData');
+Future<void> loadUltrasonicData() async {
+  try {
+    final rows = await supabase
+        .from('sensor_readings')
+        .select('ultrasonic_distance, recorded_at')
+        .order('recorded_at', ascending: false)
+        .limit(1);
 
-  if (ultrasonicData != null && mounted) {
-    final distance =
-        (ultrasonicData['distance_cm'] as num?)
-                ?.toDouble() ??
-            -1.0;
+    debugPrint('================================');
+    debugPrint('ULTRASONIC ROWS = $rows');
+    debugPrint('================================');
+
+    if (rows.isEmpty) {
+      debugPrint('ULTRASONIC: ไม่มีข้อมูล');
+
+      if (!mounted) return;
+
+      setState(() {
+        ultrasonicDistance = -1;
+      });
+
+      return;
+    }
+
+    final row = Map<String, dynamic>.from(rows.first);
+
+    final value = row['ultrasonic_distance'];
+
+    double? distance;
+
+    if (value is num) {
+      distance = value.toDouble();
+    } else if (value != null) {
+      distance = double.tryParse(value.toString());
+    }
+
+    if (distance == null) {
+      debugPrint(
+        'ULTRASONIC: อ่านค่าไม่ได้ = $value',
+      );
+      return;
+    }
+
+    debugPrint(
+      'ULTRASONIC ล่าสุด = $distance cm',
+    );
+
+    if (!mounted) return;
 
     setState(() {
-      ultrasonicDistance = distance;
+      ultrasonicDistance = distance!;
+    });
+  } catch (e) {
+    debugPrint(
+      'ULTRASONIC ERROR = $e',
+    );
+  }
+}
+// =====================================================
+// CHECK WATER LEVEL EVERY 5 SECONDS
+// ถ้าน้ำต่ำกว่า 60% -> แจ้งเตือนทุก 5 วินาที
+// =====================================================
 
-      // ==========================================
-      // ตรวจจับคนจากระยะ Ultrasonic
-      // 0 - 100 cm = พบคน
-      // > 100 cm = ไม่พบ
-      // -1 = อ่านค่าไม่ได้
-      // ==========================================
+Future<void> checkWaterLevelAndNotify() async {
+  try {
+    if (deviceId == null) {
+      return;
+    }
 
-      motionDetected =
-          distance >= 0 && distance <= 100;
+    // ---------------------------------------------
+    // โหลดระดับน้ำล่าสุดจาก device_status
+    // ---------------------------------------------
+
+    final List<dynamic> statusRows = await supabase
+        .from('device_status')
+        .select('water_level')
+        .eq(
+          'device_id',
+          deviceId!,
+        )
+        .order(
+          'last_seen',
+          ascending: false,
+        )
+        .limit(1);
+
+    if (statusRows.isEmpty) {
+      debugPrint('WATER: ไม่พบข้อมูล');
+      return;
+    }
+
+    final statusData =
+        statusRows.first as Map<String, dynamic>;
+
+    final int currentWaterLevel =
+        (statusData['water_level'] as num?)
+                ?.toInt() ??
+            0;
+
+    // ---------------------------------------------
+    // อัปเดตค่าบนหน้า Dashboard
+    // ---------------------------------------------
+
+    if (mounted) {
+      setState(() {
+        waterLevel = currentWaterLevel;
+      });
+    }
+
+    debugPrint(
+      '================================',
+    );
+    debugPrint(
+      'WATER LEVEL = $currentWaterLevel%',
+    );
+
+    // ---------------------------------------------
+    // ถ้าน้ำตั้งแต่ 60% ขึ้นไป -> ไม่แจ้งเตือน
+    // ---------------------------------------------
+
+    if (currentWaterLevel >= 40) {
+      debugPrint(
+        'WATER OK -> ไม่ต้องแจ้งเตือน',
+      );
+
+      debugPrint(
+        '================================',
+      );
+
+      return;
+    }
+
+    // ---------------------------------------------
+    // น้ำต่ำกว่า 40%
+    // ---------------------------------------------
+
+    debugPrint(
+      '⚠️ WATER LOW -> ต่ำกว่า 40%',
+    );
+
+    final user =
+        supabase.auth.currentUser;
+
+    if (user == null) {
+      debugPrint(
+        'ไม่พบผู้ใช้ที่ Login อยู่',
+      );
+
+      return;
+    }
+
+    // ---------------------------------------------
+    // สร้าง Notification ใน Supabase
+    // ทุกครั้งที่ตรวจพบ จะสร้างใหม่
+    // ---------------------------------------------
+
+    final waterText =
+        currentWaterLevel.toString();
+
+    await supabase
+        .from('notifications')
+        .insert({
+      'user_id': user.id,
+      'type': 'water_low',
+      'title': 'ระดับน้ำต่ำ',
+      'message':
+          '⚠️ ระดับน้ำต่ำ เหลือ $waterText%',
+      'is_read': false,
+      'created_at':
+          DateTime.now().toIso8601String(),
     });
 
     debugPrint(
-      'Distance = $distance cm | '
-      'Motion = $motionDetected',
+      'สร้าง Notification สำเร็จ: น้ำเหลือ $waterText%',
     );
-  } else {
+
+    // ---------------------------------------------
+    // แจ้งเตือนบนหน้าจอ
+    // ---------------------------------------------
+
     if (mounted) {
-      setState(() {
-        ultrasonicDistance = -1.0;
-        motionDetected = false;
-      });
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(
+              '⚠️ ระดับน้ำต่ำ เหลือ $waterText%',
+            ),
+            duration:
+                const Duration(seconds: 10),
+            backgroundColor:
+                Colors.orange.shade800,
+          ),
+        );
     }
+
+    debugPrint(
+      '================================',
+    );
+  } catch (e) {
+    debugPrint(
+      'Water notification error: $e',
+    );
   }
 }
-  }
 
   // =====================================================
   // UPDATE DEVICE CONTROLS
@@ -341,22 +634,36 @@ if (deviceId != null) {
       final data = await supabase
           .from('device_controls')
           .update({
-            ...values,
-            'updated_at':
-                DateTime.now().toIso8601String(),
-          })
-          .eq('device_id', deviceId!)
+        ...values,
+        'updated_at':
+            DateTime.now()
+                .toIso8601String(),
+      })
+          .eq(
+            'device_id',
+            deviceId!,
+          )
           .select()
           .single();
 
-      debugPrint('================================');
-      debugPrint('DEVICE CONTROLS UPDATE SUCCESS');
-      debugPrint(data.toString());
-      debugPrint('================================');
+      debugPrint(
+        '================================',
+      );
+      debugPrint(
+        'DEVICE CONTROLS UPDATE SUCCESS',
+      );
+      debugPrint(
+        data.toString(),
+      );
+      debugPrint(
+        '================================',
+      );
 
       return true;
     } catch (e) {
-      debugPrint('DEVICE CONTROLS UPDATE ERROR: $e');
+      debugPrint(
+        'DEVICE CONTROLS UPDATE ERROR: $e',
+      );
 
       if (mounted) {
         showMessage(
@@ -377,12 +684,6 @@ if (deviceId != null) {
 
   // =====================================================
   // UPDATE RELAY CONTROL
-  //
-  // relay1 = FAN
-  // relay2 = MIST
-  //
-  // UPDATE ก่อน
-  // ถ้าไม่มี Row -> INSERT
   // =====================================================
 
   Future<bool> updateRelayControl(
@@ -401,38 +702,50 @@ if (deviceId != null) {
         saving = true;
       });
 
-      final String currentDeviceId = deviceId!;
+      final String currentDeviceId =
+          deviceId!;
 
       final updateData = {
         ...values,
         'updated_at':
-            DateTime.now().toIso8601String(),
+            DateTime.now()
+                .toIso8601String(),
       };
 
-      debugPrint('================================');
-      debugPrint('RELAY CONTROL');
-      debugPrint('DEVICE ID = $currentDeviceId');
-      debugPrint('UPDATE DATA = $updateData');
-      debugPrint('================================');
+      debugPrint(
+        '================================',
+      );
+      debugPrint(
+        'RELAY CONTROL',
+      );
+      debugPrint(
+        'DEVICE ID = $currentDeviceId',
+      );
+      debugPrint(
+        'UPDATE DATA = $updateData',
+      );
+      debugPrint(
+        '================================',
+      );
 
       // =================================================
       // STEP 1 : UPDATE
       // =================================================
 
-      final List<dynamic> updatedRows =
+      final List<dynamic>
+          updatedRows =
           await supabase
               .from('relay_control')
               .update(updateData)
-              .eq('device_id', currentDeviceId)
+              .eq(
+                'device_id',
+                currentDeviceId,
+              )
               .select();
 
       debugPrint(
         'RELAY UPDATE RESULT = $updatedRows',
       );
-
-      // =================================================
-      // ถ้า UPDATE สำเร็จ
-      // =================================================
 
       if (updatedRows.isNotEmpty) {
         debugPrint(
@@ -450,26 +763,34 @@ if (deviceId != null) {
         'ไม่พบ relay_control ของ device_id นี้',
       );
 
-      final Map<String, dynamic> insertData = {
-        'device_id': currentDeviceId,
-        'relay1': values.containsKey('relay1')
-            ? values['relay1']
-            : fanOn,
-        'relay2': values.containsKey('relay2')
-            ? values['relay2']
-            : mistOn,
+      final Map<String, dynamic>
+          insertData = {
+        'device_id':
+            currentDeviceId,
+        'relay1':
+            values.containsKey('relay1')
+                ? values['relay1']
+                : fanOn,
+        'relay2':
+            values.containsKey('relay2')
+                ? values['relay2']
+                : mistOn,
         'updated_at':
-            DateTime.now().toIso8601String(),
+            DateTime.now()
+                .toIso8601String(),
       };
 
       debugPrint(
         'RELAY INSERT DATA = $insertData',
       );
 
-      final List<dynamic> insertedRows =
+      final List<dynamic>
+          insertedRows =
           await supabase
               .from('relay_control')
-              .insert(insertData)
+              .insert(
+                insertData,
+              )
               .select();
 
       debugPrint(
@@ -491,13 +812,27 @@ if (deviceId != null) {
 
       return false;
     } on PostgrestException catch (e) {
-      debugPrint('================================');
-      debugPrint('RELAY POSTGRES ERROR');
-      debugPrint('MESSAGE = ${e.message}');
-      debugPrint('CODE = ${e.code}');
-      debugPrint('DETAILS = ${e.details}');
-      debugPrint('HINT = ${e.hint}');
-      debugPrint('================================');
+      debugPrint(
+        '================================',
+      );
+      debugPrint(
+        'RELAY POSTGRES ERROR',
+      );
+      debugPrint(
+        'MESSAGE = ${e.message}',
+      );
+      debugPrint(
+        'CODE = ${e.code}',
+      );
+      debugPrint(
+        'DETAILS = ${e.details}',
+      );
+      debugPrint(
+        'HINT = ${e.hint}',
+      );
+      debugPrint(
+        '================================',
+      );
 
       if (mounted) {
         showMessage(
@@ -510,10 +845,18 @@ if (deviceId != null) {
 
       return false;
     } catch (e) {
-      debugPrint('================================');
-      debugPrint('RELAY CONTROL ERROR');
-      debugPrint(e.toString());
-      debugPrint('================================');
+      debugPrint(
+        '================================',
+      );
+      debugPrint(
+        'RELAY CONTROL ERROR',
+      );
+      debugPrint(
+        e.toString(),
+      );
+      debugPrint(
+        '================================',
+      );
 
       if (mounted) {
         showMessage(
@@ -534,27 +877,23 @@ if (deviceId != null) {
 
   // =====================================================
   // FAN ON / OFF
-  //
-  // relay1 = FAN
-  // TRUE  = ON
-  // FALSE = OFF
   // =====================================================
 
   Future<void> toggleFan() async {
     if (emergencyStop) {
-      showMessage('ระบบหยุดฉุกเฉินอยู่');
+      showMessage(
+        'ระบบหยุดฉุกเฉินอยู่',
+      );
       return;
     }
 
     final bool newPower = !fanOn;
 
     final int newLevel = newPower
-        ? (fanLevel == 0 ? 2 : fanLevel)
+        ? (fanLevel == 0
+            ? 2
+            : fanLevel)
         : 0;
-
-    // -----------------------------------------
-    // บันทึก Relay 1
-    // -----------------------------------------
 
     final relaySuccess =
         await updateRelayControl({
@@ -562,10 +901,6 @@ if (deviceId != null) {
     });
 
     if (!relaySuccess) return;
-
-    // -----------------------------------------
-    // บันทึก device_controls
-    // -----------------------------------------
 
     final controlSuccess =
         await updateControls({
@@ -593,15 +928,15 @@ if (deviceId != null) {
   // FAN LEVEL
   // =====================================================
 
-  Future<void> changeFanLevel(int level) async {
+  Future<void> changeFanLevel(
+    int level,
+  ) async {
     if (emergencyStop) {
-      showMessage('ระบบหยุดฉุกเฉินอยู่');
+      showMessage(
+        'ระบบหยุดฉุกเฉินอยู่',
+      );
       return;
     }
-
-    // -----------------------------------------
-    // การเลือกระดับพัดลม = เปิด Relay 1
-    // -----------------------------------------
 
     final relaySuccess =
         await updateRelayControl({
@@ -609,10 +944,6 @@ if (deviceId != null) {
     });
 
     if (!relaySuccess) return;
-
-    // -----------------------------------------
-    // บันทึกระดับพัดลม
-    // -----------------------------------------
 
     final success =
         await updateControls({
@@ -636,21 +967,17 @@ if (deviceId != null) {
 
   // =====================================================
   // MIST ON / OFF
-  //
-  // relay2 = MIST
-  // TRUE  = ON
-  // FALSE = OFF
   // =====================================================
 
-  Future<void> toggleMist(bool value) async {
+  Future<void> toggleMist(
+    bool value,
+  ) async {
     if (emergencyStop) {
-      showMessage('ระบบหยุดฉุกเฉินอยู่');
+      showMessage(
+        'ระบบหยุดฉุกเฉินอยู่',
+      );
       return;
     }
-
-    // -----------------------------------------
-    // บันทึก Relay 6
-    // -----------------------------------------
 
     final relaySuccess =
         await updateRelayControl({
@@ -659,11 +986,8 @@ if (deviceId != null) {
 
     if (!relaySuccess) return;
 
-    // -----------------------------------------
-    // บันทึกระดับหมอก
-    // -----------------------------------------
-
-    final int level = value ? 1 : 0;
+    final int level =
+        value ? 1 : 0;
 
     final success =
         await updateControls({
@@ -681,8 +1005,8 @@ if (deviceId != null) {
 
     showMessage(
       value
-          ? 'เปิดระบบพ่นหมอกแล้ว'
-          : 'ปิดระบบพ่นหมอกแล้ว',
+          ? 'เปิดระบบพ่นละอองน้ำแล้ว'
+          : 'ปิดระบบพ่นละอองน้ำแล้ว',
     );
   }
 
@@ -712,7 +1036,7 @@ if (deviceId != null) {
     showMessage(
       automatic
           ? 'เปลี่ยนเป็นโหมดอัตโนมัติ'
-          : 'เปลี่ยนเป็นโหมดแมนนวล',
+          : 'เปลี่ยนเป็นโหมดควบคุมเอง',
     );
   }
 
@@ -723,7 +1047,8 @@ if (deviceId != null) {
   Future<void> changeHumidity(
     double value,
   ) async {
-    final int newValue = value.round();
+    final int newValue =
+        value.round();
 
     final success =
         await updateControls({
@@ -748,11 +1073,6 @@ if (deviceId != null) {
     final bool newEmergency =
         !emergencyStop;
 
-    // -----------------------------------------
-    // Emergency ON
-    // ปิด Relay 1 และ Relay 2
-    // -----------------------------------------
-
     if (newEmergency) {
       final relaySuccess =
           await updateRelayControl({
@@ -765,13 +1085,20 @@ if (deviceId != null) {
 
     final success =
         await updateControls({
-      'emergency_stop': newEmergency,
+      'emergency_stop':
+          newEmergency,
       'power':
-          newEmergency ? false : fanOn,
+          newEmergency
+              ? false
+              : fanOn,
       'fan_level':
-          newEmergency ? 0 : fanLevel,
+          newEmergency
+              ? 0
+              : fanLevel,
       'mist_level':
-          newEmergency ? 0 : mistLevel,
+          newEmergency
+              ? 0
+              : mistLevel,
     });
 
     if (!success) return;
@@ -779,7 +1106,8 @@ if (deviceId != null) {
     if (!mounted) return;
 
     setState(() {
-      emergencyStop = newEmergency;
+      emergencyStop =
+          newEmergency;
 
       if (newEmergency) {
         fanOn = false;
@@ -814,9 +1142,12 @@ if (deviceId != null) {
             message,
             maxLines: 5,
           ),
-          backgroundColor: error
-              ? Colors.red.shade700
-              : const Color(0xFF0878C9),
+          backgroundColor:
+              error
+                  ? Colors.red.shade700
+                  : const Color(
+                      0xFF0878C9,
+                    ),
           duration:
               const Duration(seconds: 3),
         ),
@@ -828,7 +1159,9 @@ if (deviceId != null) {
   // =====================================================
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context,
+  ) {
     return Scaffold(
       backgroundColor:
           const Color(0xFF080D13),
@@ -838,12 +1171,14 @@ if (deviceId != null) {
             buildHeader(),
 
             Expanded(
-              child: RefreshIndicator(
+              child:
+                  RefreshIndicator(
                 color:
                     const Color(0xFF39B9F0),
                 backgroundColor:
                     const Color(0xFF151B25),
-                onRefresh: loadData,
+                onRefresh:
+                    loadData,
                 child:
                     SingleChildScrollView(
                   physics:
@@ -868,47 +1203,63 @@ if (deviceId != null) {
                             CrossAxisAlignment.start,
                         children: [
                           Expanded(
-                            child: SensorCard(
-                              title: 'อุณหภูมิ',
+                            child:
+                                SensorCard(
+                              title:
+                                  'อุณหภูมิ',
                               value:
                                   '${temperature.toStringAsFixed(1)}°',
-                              subtitle: 'อุณหภูมิ',
+                              subtitle:
+                                  'อุณหภูมิ',
                               icon:
                                   Icons.thermostat_outlined,
                               color:
-                                  const Color(0xFFFF6B24),
+                                  const Color(
+                                0xFFFF6B24,
+                              ),
                               progress:
-                                  ((temperature - 15) /
+                                  ((temperature -
+                                              15) /
                                           25)
                                       .clamp(
-                                          0.0, 1.0),
+                                0.0,
+                                1.0,
+                              ),
                             ),
                           ),
-
                           const SizedBox(
-                              width: 12),
-
+                            width: 12,
+                          ),
                           Expanded(
-                            child: SensorCard(
-                              title: 'ความชื้น',
+                            child:
+                                SensorCard(
+                              title:
+                                  'ความชื้น',
                               value:
                                   '${humidity.toStringAsFixed(1)}%',
-                              subtitle: 'ความชื้น',
+                              subtitle:
+                                  'ความชื้น',
                               icon:
                                   Icons.water_drop_outlined,
                               color:
-                                  const Color(0xFF2196F3),
+                                  const Color(
+                                0xFF2196F3,
+                              ),
                               progress:
-                                  (humidity / 100)
+                                  (humidity /
+                                          100)
                                       .clamp(
-                                          0.0, 1.0),
+                                0.0,
+                                1.0,
+                              ),
                             ),
                           ),
                         ],
                       ),
 
                       const SizedBox(
-                          height: 25),
+                        height: 25,
+                      ),
 
                       // ==========================================
                       // FAN
@@ -920,12 +1271,14 @@ if (deviceId != null) {
                       ),
 
                       const SizedBox(
-                          height: 10),
+                        height: 10,
+                      ),
 
                       buildFanControl(),
 
                       const SizedBox(
-                          height: 26),
+                        height: 26,
+                      ),
 
                       // ==========================================
                       // MIST
@@ -933,16 +1286,18 @@ if (deviceId != null) {
 
                       const SectionTitle(
                         title:
-                            'ควบคุมหมอก',
+                            'ควบคุมละอองน้ำ',
                       ),
 
                       const SizedBox(
-                          height: 10),
+                        height: 10,
+                      ),
 
                       buildMistControl(),
 
                       const SizedBox(
-                          height: 26),
+                        height: 26,
+                      ),
 
                       // ==========================================
                       // MODE
@@ -954,12 +1309,14 @@ if (deviceId != null) {
                       ),
 
                       const SizedBox(
-                          height: 10),
+                        height: 10,
+                      ),
 
                       buildModeControl(),
 
                       const SizedBox(
-                          height: 26),
+                        height: 26,
+                      ),
 
                       // ==========================================
                       // HUMIDITY
@@ -970,7 +1327,8 @@ if (deviceId != null) {
                         '${humiditySetting.round()}%',
                         style:
                             const TextStyle(
-                          color: Colors.white,
+                          color:
+                              Colors.white,
                           fontSize: 18,
                           fontWeight:
                               FontWeight.w700,
@@ -978,12 +1336,34 @@ if (deviceId != null) {
                       ),
 
                       const SizedBox(
-                          height: 10),
+                        height: 10,
+                      ),
 
                       buildHumiditySlider(),
 
                       const SizedBox(
-                          height: 26),
+                        height: 26,
+                      ),
+
+                      // ==========================================
+                      // ULTRASONIC
+                      // ไม่มีกราฟ
+                      // ==========================================
+
+                      const SectionTitle(
+                        title:
+                            'ระยะ Ultrasonic',
+                      ),
+
+                      const SizedBox(
+                        height: 10,
+                      ),
+
+                      buildUltrasonicDistance(),
+
+                      const SizedBox(
+                        height: 26,
+                      ),
 
                       // ==========================================
                       // DEVICE STATUS
@@ -995,31 +1375,40 @@ if (deviceId != null) {
                       ),
 
                       const SizedBox(
-                          height: 10),
+                        height: 10,
+                      ),
 
                       buildDeviceStatus(),
 
                       const SizedBox(
-                          height: 20),
+                        height: 20,
+                      ),
 
                       if (saving)
                         const Center(
                           child:
                               CircularProgressIndicator(
                             color:
-                                Color(0xFF46B9EA),
+                                Color(
+                              0xFF46B9EA,
+                            ),
                           ),
                         ),
 
                       if (loading)
                         const Padding(
                           padding:
-                              EdgeInsets.all(20),
-                          child: Center(
+                              EdgeInsets.all(
+                            20,
+                          ),
+                          child:
+                              Center(
                             child:
                                 CircularProgressIndicator(
                               color:
-                                  Color(0xFF46B9EA),
+                                  Color(
+                                0xFF46B9EA,
+                              ),
                             ),
                           ),
                         ),
@@ -1046,14 +1435,18 @@ if (deviceId != null) {
     return Container(
       width: 54,
       height: 54,
-      decoration: BoxDecoration(
+      decoration:
+          BoxDecoration(
         color:
             Colors.white.withOpacity(.13),
-        shape: BoxShape.circle,
+        shape:
+            BoxShape.circle,
       ),
-      child: Icon(
+      child:
+          Icon(
         icon,
-        color: Colors.white,
+        color:
+            Colors.white,
         size: 28,
       ),
     );
@@ -1090,7 +1483,8 @@ if (deviceId != null) {
               Radius.circular(30),
         ),
       ),
-      child: Column(
+      child:
+          Column(
         children: [
           Row(
             children: [
@@ -1099,12 +1493,15 @@ if (deviceId != null) {
                 height: 62,
                 decoration:
                     BoxDecoration(
-                  color: Colors.white,
+                  color:
+                      Colors.white,
                   borderRadius:
                       BorderRadius.circular(
-                          17),
+                    17,
+                  ),
                 ),
-                child: const Icon(
+                child:
+                    const Icon(
                   Icons.air,
                   color:
                       Color(0xFF0A93D1),
@@ -1113,15 +1510,17 @@ if (deviceId != null) {
               ),
 
               const SizedBox(
-                  width: 14),
+                width: 14,
+              ),
 
               const Expanded(
-                child: Column(
+                child:
+                    Column(
                   crossAxisAlignment:
                       CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'พัดลมไอน้ำ',
+                      'พัดลมละอองน้ำ',
                       style:
                           TextStyle(
                         color:
@@ -1153,8 +1552,9 @@ if (deviceId != null) {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (context) =>
-                          const NotificationScreen(),
+                      builder:
+                          (context) =>
+                              const NotificationScreen(),
                     ),
                   );
                 },
@@ -1164,7 +1564,9 @@ if (deviceId != null) {
                 ),
               ),
 
-              const SizedBox(width: 8),
+              const SizedBox(
+                width: 8,
+              ),
 
               GestureDetector(
                 behavior:
@@ -1173,8 +1575,9 @@ if (deviceId != null) {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (context) =>
-                          SettingsScreen(
+                      builder:
+                          (context) =>
+                              SettingsScreen(
                         username:
                             widget.username,
                       ),
@@ -1189,14 +1592,15 @@ if (deviceId != null) {
             ],
           ),
 
-          const SizedBox(height: 15),
+          const SizedBox(
+            height: 15,
+          ),
 
           Row(
             children: [
               Container(
                 padding:
-                    const EdgeInsets
-                        .symmetric(
+                    const EdgeInsets.symmetric(
                   horizontal: 14,
                   vertical: 8,
                 ),
@@ -1206,9 +1610,11 @@ if (deviceId != null) {
                       .withOpacity(.15),
                   borderRadius:
                       BorderRadius.circular(
-                          20),
+                    20,
+                  ),
                 ),
-                child: Row(
+                child:
+                    Row(
                   children: [
                     Container(
                       width: 9,
@@ -1225,20 +1631,24 @@ if (deviceId != null) {
                       ),
                     ),
                     const SizedBox(
-                        width: 7),
+                      width: 7,
+                    ),
                   ],
                 ),
               ),
 
               const SizedBox(
-                  width: 18),
+                width: 18,
+              ),
 
               const Expanded(
-                child: Text(
+                child:
+                    Text(
                   'My Smart Mist Fan',
                   style:
                       TextStyle(
-                    color: Colors.white,
+                    color:
+                        Colors.white,
                     fontSize: 17,
                     fontWeight:
                         FontWeight.w500,
@@ -1265,45 +1675,57 @@ if (deviceId != null) {
         20,
         18,
       ),
-      decoration: dashboardBox(),
-      child: Column(
+      decoration:
+          dashboardBox(),
+      child:
+          Column(
         children: [
           Row(
             mainAxisAlignment:
                 MainAxisAlignment.center,
             children: [
               GestureDetector(
-                onTap: toggleFan,
-                child: Container(
+                onTap:
+                    toggleFan,
+                child:
+                    Container(
                   width: 105,
                   height: 105,
                   decoration:
                       BoxDecoration(
-                    shape: BoxShape.circle,
-                    border: Border.all(
+                    shape:
+                        BoxShape.circle,
+                    border:
+                        Border.all(
                       color: fanOn
                           ? const Color(
-                              0xFF36B7ED)
+                              0xFF36B7ED,
+                            )
                           : const Color(
-                              0xFF77808E),
+                              0xFF77808E,
+                            ),
                       width: 2,
                     ),
                   ),
-                  child: Icon(
+                  child:
+                      Icon(
                     Icons
                         .power_settings_new,
                     size: 58,
                     color: fanOn
                         ? const Color(
-                            0xFF3DBDF1)
+                            0xFF3DBDF1,
+                          )
                         : const Color(
-                            0xFFCBD0D8),
+                            0xFFCBD0D8,
+                          ),
                   ),
                 ),
               ),
 
               const SizedBox(
-                  width: 38),
+                width: 38,
+              ),
 
               Column(
                 children: [
@@ -1314,12 +1736,15 @@ if (deviceId != null) {
                         BoxDecoration(
                       color:
                           const Color(
-                              0xFF29303C),
+                        0xFF29303C,
+                      ),
                       borderRadius:
                           BorderRadius.circular(
-                              14),
+                        14,
+                      ),
                     ),
-                    child: const Icon(
+                    child:
+                        const Icon(
                       Icons.air,
                       color:
                           Color(0xFFCBD0D8),
@@ -1328,13 +1753,17 @@ if (deviceId != null) {
                   ),
 
                   const SizedBox(
-                      height: 5),
+                    height: 5,
+                  ),
 
                   Text(
-                    fanOn ? 'ON' : 'OFF',
+                    fanOn
+                        ? 'ON'
+                        : 'OFF',
                     style:
                         const TextStyle(
-                      color: Colors.white,
+                      color:
+                          Colors.white,
                       fontSize: 27,
                       fontWeight:
                           FontWeight.w900,
@@ -1343,8 +1772,7 @@ if (deviceId != null) {
 
                   Container(
                     padding:
-                        const EdgeInsets
-                            .symmetric(
+                        const EdgeInsets.symmetric(
                       horizontal: 12,
                       vertical: 3,
                     ),
@@ -1352,12 +1780,15 @@ if (deviceId != null) {
                         BoxDecoration(
                       color:
                           const Color(
-                              0xFF292F3B),
+                        0xFF292F3B,
+                      ),
                       borderRadius:
                           BorderRadius.circular(
-                              15),
+                        15,
+                      ),
                     ),
-                    child: Text(
+                    child:
+                        Text(
                       fanLevel == 0
                           ? 'ปิด'
                           : fanLevel == 1
@@ -1378,11 +1809,15 @@ if (deviceId != null) {
             ],
           ),
 
-          const SizedBox(height: 18),
+          const SizedBox(
+            height: 18,
+          ),
 
           Row(
             children: [
-              const SizedBox(width: 8),
+              const SizedBox(
+                width: 8,
+              ),
               fanLevelButton(
                 'ความแรงพัดลมระดับกลาง',
                 2,
@@ -1399,30 +1834,41 @@ if (deviceId != null) {
     int level,
   ) {
     final bool selected =
-        fanOn && fanLevel == level;
+        fanOn &&
+        fanLevel == level;
 
     return Expanded(
-      child: GestureDetector(
+      child:
+          GestureDetector(
         onTap: () {
-          changeFanLevel(level);
+          changeFanLevel(
+            level,
+          );
         },
-        child: Container(
+        child:
+            Container(
           height: 50,
           decoration:
               BoxDecoration(
             color: selected
                 ? const Color(
-                    0xFF45B9EB)
+                    0xFF45B9EB,
+                  )
                 : const Color(
-                    0xFF292F3B),
+                    0xFF292F3B,
+                  ),
             borderRadius:
                 BorderRadius.circular(
-                    13),
+              13,
+            ),
           ),
-          alignment: Alignment.center,
-          child: Text(
+          alignment:
+              Alignment.center,
+          child:
+              Text(
             text,
-            style: TextStyle(
+            style:
+                TextStyle(
               color: selected
                   ? Colors.white
                   : Colors.white70,
@@ -1447,8 +1893,10 @@ if (deviceId != null) {
         horizontal: 20,
         vertical: 17,
       ),
-      decoration: dashboardBox(),
-      child: Row(
+      decoration:
+          dashboardBox(),
+      child:
+          Row(
         children: [
           Container(
             width: 65,
@@ -1456,46 +1904,57 @@ if (deviceId != null) {
             decoration:
                 BoxDecoration(
               color:
-                  const Color(0xFF29303C),
+                  const Color(
+                0xFF29303C,
+              ),
               borderRadius:
-                  BorderRadius.circular(15),
+                  BorderRadius.circular(
+                15,
+              ),
             ),
-            child: const Icon(
+            child:
+                const Icon(
               Icons.water_drop_outlined,
-              color: Colors.white70,
+              color:
+                  Colors.white70,
               size: 34,
             ),
           ),
 
-          const SizedBox(width: 15),
+          const SizedBox(
+            width: 15,
+          ),
 
           Expanded(
-            child: Column(
+            child:
+                Column(
               crossAxisAlignment:
                   CrossAxisAlignment.start,
               children: [
                 Text(
                   mistOn
-                      ? 'ควบคุมหมอก ON'
-                      : 'ควบคุมหมอก OFF',
+                      ? 'ควบคุมละอองน้ำ ON'
+                      : 'ควบคุมละอองน้ำ OFF',
                   style:
                       const TextStyle(
-                    color: Colors.white,
+                    color:
+                        Colors.white,
                     fontSize: 18,
                     fontWeight:
                         FontWeight.w800,
                   ),
                 ),
-
-                const SizedBox(height: 5),
-
+                const SizedBox(
+                  height: 5,
+                ),
                 Text(
                   mistOn
-                      ? 'ระบบพ่นหมอกกำลังทำงาน'
-                      : 'ระบบพ่นหมอกปิดอยู่',
+                      ? 'ระบบพ่นละอองน้ำกำลังทำงาน'
+                      : 'ระบบพ่นละอองน้ำปิดอยู่',
                   style:
                       const TextStyle(
-                    color: Colors.white54,
+                    color:
+                        Colors.white54,
                     fontSize: 14,
                   ),
                 ),
@@ -1504,9 +1963,12 @@ if (deviceId != null) {
           ),
 
           Switch(
-            value: mistOn,
+            value:
+                mistOn,
             activeColor:
-                const Color(0xFF46B9EA),
+                const Color(
+              0xFF46B9EA,
+            ),
             onChanged:
                 emergencyStop
                     ? null
@@ -1524,23 +1986,31 @@ if (deviceId != null) {
   Widget buildModeControl() {
     return Container(
       padding:
-          const EdgeInsets.all(14),
-      decoration: dashboardBox(),
-      child: Column(
+          const EdgeInsets.all(
+        14,
+      ),
+      decoration:
+          dashboardBox(),
+      child:
+          Column(
         children: [
           Row(
             children: [
               Expanded(
-                child: modeButton(
-                  'แมนนวล',
+                child:
+                    modeButton(
+                  'ควบคุมเอง',
                   false,
                 ),
               ),
 
-              const SizedBox(width: 10),
+              const SizedBox(
+                width: 10,
+              ),
 
               Expanded(
-                child: modeButton(
+                child:
+                    modeButton(
                   'อัตโนมัติ',
                   true,
                 ),
@@ -1548,39 +2018,50 @@ if (deviceId != null) {
             ],
           ),
 
-          const SizedBox(height: 10),
+          const SizedBox(
+            height: 10,
+          ),
 
           Container(
-            width: double.infinity,
+            width:
+                double.infinity,
             padding:
-                const EdgeInsets
-                    .symmetric(
+                const EdgeInsets.symmetric(
               horizontal: 12,
               vertical: 9,
             ),
             decoration:
                 BoxDecoration(
               color:
-                  const Color(0xFF0574C8),
+                  const Color(
+                0xFF0574C8,
+              ),
               borderRadius:
-                  BorderRadius.circular(10),
+                  BorderRadius.circular(
+                10,
+              ),
             ),
-            child: const Row(
+            child:
+                const Row(
               children: [
                 Icon(
                   Icons.bolt,
-                  color: Colors.white,
+                  color:
+                      Colors.white,
                   size: 20,
                 ),
-
-                SizedBox(width: 7),
-
+                SizedBox(
+                  width: 7,
+                ),
                 Expanded(
-                  child: Text(
+                  child:
+                      Text(
                     'พัดลมเปิดเมื่อตรวจพบการเคลื่อนไหว; '
-                    'หมอกเปิดเมื่อความชื้นต่ำกว่าค่าที่กำหนด',
-                    style: TextStyle(
-                      color: Colors.white,
+                    'ละอองน้ำเปิดเมื่อความชื้นต่ำกว่าค่าที่กำหนด',
+                    style:
+                        TextStyle(
+                      color:
+                          Colors.white,
                       fontSize: 13,
                     ),
                   ),
@@ -1598,27 +2079,41 @@ if (deviceId != null) {
     bool automatic,
   ) {
     final bool selected =
-        automaticMode == automatic;
+        automaticMode ==
+            automatic;
 
     return GestureDetector(
       onTap: () {
-        changeMode(automatic);
+        changeMode(
+          automatic,
+        );
       },
-      child: Container(
+      child:
+          Container(
         height: 52,
         decoration:
             BoxDecoration(
           color: selected
-              ? const Color(0xFF42B8EA)
-              : const Color(0xFF292F3B),
+              ? const Color(
+                  0xFF42B8EA,
+                )
+              : const Color(
+                  0xFF292F3B,
+                ),
           borderRadius:
-              BorderRadius.circular(12),
+              BorderRadius.circular(
+            12,
+          ),
         ),
-        alignment: Alignment.center,
-        child: Text(
+        alignment:
+            Alignment.center,
+        child:
+            Text(
           text,
-          style: TextStyle(
-            color: Colors.white,
+          style:
+              TextStyle(
+            color:
+                Colors.white,
             fontSize: 16,
             fontWeight: selected
                 ? FontWeight.w800
@@ -1642,31 +2137,44 @@ if (deviceId != null) {
         15,
         8,
       ),
-      decoration: dashboardBox(),
-      child: Row(
+      decoration:
+          dashboardBox(),
+      child:
+          Row(
         children: [
           const Text(
             '20%',
-            style: TextStyle(
-              color: Colors.white70,
+            style:
+                TextStyle(
+              color:
+                  Colors.white70,
               fontSize: 15,
             ),
           ),
 
           Expanded(
-            child: Slider(
+            child:
+                Slider(
               value:
                   humiditySetting.clamp(
-                      20, 90),
+                20,
+                90,
+              ),
               min: 20,
               max: 90,
               divisions: 70,
               activeColor:
-                  const Color(0xFF45B9EA),
+                  const Color(
+                0xFF45B9EA,
+              ),
               inactiveColor:
-                  const Color(0xFF292F3B),
-              thumbColor: Colors.white,
-              onChanged: (value) {
+                  const Color(
+                0xFF292F3B,
+              ),
+              thumbColor:
+                  Colors.white,
+              onChanged:
+                  (value) {
                 setState(() {
                   humiditySetting =
                       value;
@@ -1679,10 +2187,156 @@ if (deviceId != null) {
 
           const Text(
             '90%',
-            style: TextStyle(
-              color: Colors.white70,
+            style:
+                TextStyle(
+              color:
+                  Colors.white70,
               fontSize: 15,
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // =====================================================
+  // ULTRASONIC DISTANCE
+  // =====================================================
+
+  Widget buildUltrasonicDistance() {
+    final bool hasData =
+        ultrasonicDistance >= 0;
+
+    return Container(
+      width:
+          double.infinity,
+      padding:
+          const EdgeInsets.all(
+        18,
+      ),
+      decoration:
+          dashboardBox(),
+      child:
+          Row(
+        children: [
+          Container(
+            width: 62,
+            height: 62,
+            decoration:
+                BoxDecoration(
+              color:
+                  const Color(
+                0xFF46B9EA,
+              ).withOpacity(.16),
+              borderRadius:
+                  BorderRadius.circular(
+                16,
+              ),
+            ),
+            child:
+                const Icon(
+              Icons.sensors,
+              color:
+                  Color(0xFF46B9EA),
+              size: 34,
+            ),
+          ),
+
+          const SizedBox(
+            width: 15,
+          ),
+
+          Expanded(
+            child:
+                Column(
+              crossAxisAlignment:
+                  CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'ระยะจาก Ultrasonic',
+                  style:
+                      TextStyle(
+                    color:
+                        Colors.white,
+                    fontSize: 17,
+                    fontWeight:
+                        FontWeight.w800,
+                  ),
+                ),
+
+                const SizedBox(
+                  height: 5,
+                ),
+
+                Text(
+                  hasData
+                      ? 'ค่าล่าสุดจาก Supabase'
+                      : 'ยังไม่มีข้อมูลจาก Supabase',
+                  style:
+                      const TextStyle(
+                    color:
+                        Colors.white54,
+                    fontSize: 13,
+                  ),
+                ),
+
+                if (hasData) ...[
+                  const SizedBox(
+                    height: 5,
+                  ),
+                  Text(
+                    motionDetected
+                        ? 'ตรวจพบวัตถุในระยะไม่เกิน 100 cm'
+                        : 'ไม่พบวัตถุในระยะไม่เกิน 100 cm',
+                    style:
+                        TextStyle(
+                      color:
+                          motionDetected
+                              ? Colors.greenAccent
+                              : Colors.white38,
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+
+          const SizedBox(
+            width: 10,
+          ),
+
+          Column(
+            crossAxisAlignment:
+                CrossAxisAlignment.end,
+            children: [
+              Text(
+                hasData
+                    ? ultrasonicDistance
+                        .toStringAsFixed(1)
+                    : '--',
+                style:
+                    const TextStyle(
+                  color:
+                      Color(0xFF46B9EA),
+                  fontSize: 30,
+                  fontWeight:
+                      FontWeight.w900,
+                ),
+              ),
+
+              const Text(
+                'cm',
+                style:
+                    TextStyle(
+                  color:
+                      Colors.white70,
+                  fontSize: 14,
+                  fontWeight:
+                      FontWeight.w700,
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -1695,32 +2349,133 @@ if (deviceId != null) {
 
   Widget buildDeviceStatus() {
     return Row(
+      crossAxisAlignment:
+          CrossAxisAlignment.start,
       children: [
         Expanded(
-          child: StatusCard(
-            icon:
-                Icons.water_drop_outlined,
-            iconColor:
-                const Color(0xFFFF7043),
-            title: 'ถังน้ำ',
-            value:
-                '$waterLevel%',
-          ),
+          child:
+              buildWaterSensor(),
         ),
 
-        const SizedBox(width: 10),
+        const SizedBox(
+          width: 10,
+        ),
 
-Expanded(
-  child: StatusCard(
-    icon: Icons.sensors,
-    iconColor: const Color(0xFF68D17D),
-    title: 'เซ็นเซอร์',
-    value: motionDetected
-        ? 'พบคน'
-        : 'ไม่พบ',
-  ),
-),
+        Expanded(
+          child:
+              StatusCard(
+            icon:
+                Icons.sensors,
+            iconColor:
+                const Color(
+              0xFF68D17D,
+            ),
+            title:
+                'เซ็นเซอร์ตรวจจับคน',
+            value:
+                motionDetected
+                    ? 'พบคน'
+                    : 'ไม่พบ',
+          ),
+        ),
       ],
+    );
+  }
+
+  // =====================================================
+  // WATER SENSOR
+  // =====================================================
+
+  Widget buildWaterSensor() {
+    return Container(
+      height: 126,
+      padding:
+          const EdgeInsets.all(
+        10,
+      ),
+      decoration:
+          BoxDecoration(
+        color:
+            const Color(0xFF151B25),
+        borderRadius:
+            BorderRadius.circular(
+          15,
+        ),
+        border:
+            Border.all(
+          color:
+              const Color(
+            0xFF29313D,
+          ),
+        ),
+      ),
+      child:
+          Column(
+        mainAxisAlignment:
+            MainAxisAlignment.center,
+        children: [
+          Container(
+            width: 45,
+            height: 45,
+            decoration:
+                BoxDecoration(
+              color:
+                  Colors.white,
+              borderRadius:
+                  BorderRadius.circular(
+                11,
+              ),
+            ),
+            child:
+                Icon(
+              Icons.water_drop,
+              color:
+                  waterLevel > 20
+                      ? const Color(
+                          0xFF46B9EA,
+                        )
+                      : Colors
+                          .orangeAccent,
+              size: 27,
+            ),
+          ),
+
+          const SizedBox(
+            height: 5,
+          ),
+
+          const Text(
+            'ระดับน้ำ',
+            maxLines: 2,
+            textAlign:
+                TextAlign.center,
+            overflow:
+                TextOverflow.ellipsis,
+            style:
+                TextStyle(
+              color:
+                  Colors.white70,
+              fontSize: 11,
+            ),
+          ),
+
+          const SizedBox(
+            height: 2,
+          ),
+
+          Text(
+            '$waterLevel%',
+            style:
+                const TextStyle(
+              color:
+                  Colors.white,
+              fontSize: 18,
+              fontWeight:
+                  FontWeight.w900,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -1733,37 +2488,50 @@ Expanded(
       height: 76,
       decoration:
           const BoxDecoration(
-        color: Color(0xFF171D27),
-        border: Border(
-          top: BorderSide(
-            color: Color(0xFF29303A),
+        color:
+            Color(0xFF171D27),
+        border:
+            Border(
+          top:
+              BorderSide(
+            color:
+                Color(0xFF29303A),
           ),
         ),
       ),
-      child: Row(
+      child:
+          Row(
         children: [
           Expanded(
-            child: bottomItem(
+            child:
+                bottomItem(
               icon:
                   Icons.grid_view_rounded,
-              text: 'แดชบอร์ด',
-              selected: true,
-              onTap: () {},
+              text:
+                  'แดชบอร์ด',
+              selected:
+                  true,
+              onTap:
+                  () {},
             ),
           ),
 
           Expanded(
-            child: bottomItem(
+            child:
+                bottomItem(
               icon:
                   Icons.memory_outlined,
-              text: 'อุปกรณ์',
-              selected: false,
+              text:
+                  'อุปกรณ์',
+              selected:
+                  false,
               onTap: () {
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (context) =>
-                        const DeviceScreen(),
+                    builder:
+                        (context) =>
+                            const DeviceScreen(),
                   ),
                 );
               },
@@ -1781,8 +2549,10 @@ Expanded(
     required VoidCallback onTap,
   }) {
     return InkWell(
-      onTap: onTap,
-      child: Column(
+      onTap:
+          onTap,
+      child:
+          Column(
         mainAxisAlignment:
             MainAxisAlignment.center,
         children: [
@@ -1790,19 +2560,24 @@ Expanded(
             icon,
             color: selected
                 ? const Color(
-                    0xFF46B9EA)
+                    0xFF46B9EA,
+                  )
                 : Colors.white54,
             size: 28,
           ),
 
-          const SizedBox(height: 3),
+          const SizedBox(
+            height: 3,
+          ),
 
           Text(
             text,
-            style: TextStyle(
+            style:
+                TextStyle(
               color: selected
                   ? const Color(
-                      0xFF46B9EA)
+                      0xFF46B9EA,
+                    )
                   : Colors.white54,
               fontSize: 13,
               fontWeight:
@@ -1823,10 +2598,15 @@ Expanded(
       color:
           const Color(0xFF151B25),
       borderRadius:
-          BorderRadius.circular(18),
-      border: Border.all(
+          BorderRadius.circular(
+        18,
+      ),
+      border:
+          Border.all(
         color:
-            const Color(0xFF29313D),
+            const Color(
+          0xFF29313D,
+        ),
         width: 1,
       ),
     );
@@ -1848,11 +2628,14 @@ class SectionTitle
 
   @override
   Widget build(
-      BuildContext context) {
+    BuildContext context,
+  ) {
     return Text(
       title,
-      style: const TextStyle(
-        color: Colors.white,
+      style:
+          const TextStyle(
+        color:
+            Colors.white,
         fontSize: 18,
         fontWeight:
             FontWeight.w700,
@@ -1886,7 +2669,8 @@ class SensorCard
 
   @override
   Widget build(
-      BuildContext context) {
+    BuildContext context,
+  ) {
     return Container(
       padding:
           const EdgeInsets.fromLTRB(
@@ -1900,9 +2684,12 @@ class SensorCard
         color:
             const Color(0xFF171D27),
         borderRadius:
-            BorderRadius.circular(20),
+            BorderRadius.circular(
+          20,
+        ),
       ),
-      child: Column(
+      child:
+          Column(
         crossAxisAlignment:
             CrossAxisAlignment.start,
         children: [
@@ -1913,27 +2700,34 @@ class SensorCard
                 height: 43,
                 decoration:
                     BoxDecoration(
-                  color: color
-                      .withOpacity(.16),
+                  color:
+                      color.withOpacity(.16),
                   borderRadius:
                       BorderRadius.circular(
-                          12),
+                    12,
+                  ),
                 ),
-                child: Icon(
+                child:
+                    Icon(
                   icon,
-                  color: color,
+                  color:
+                      color,
                   size: 26,
                 ),
               ),
 
-              const SizedBox(width: 9),
+              const SizedBox(
+                width: 9,
+              ),
 
               Expanded(
-                child: Text(
+                child:
+                    Text(
                   title,
                   style:
                       const TextStyle(
-                    color: Colors.white,
+                    color:
+                        Colors.white,
                     fontSize: 16,
                     fontWeight:
                         FontWeight.w700,
@@ -1943,21 +2737,28 @@ class SensorCard
             ],
           ),
 
-          const SizedBox(height: 10),
+          const SizedBox(
+            height: 10,
+          ),
 
           Center(
-            child: SizedBox(
+            child:
+                SizedBox(
               width: 140,
               height: 140,
-              child: CustomPaint(
+              child:
+                  CustomPaint(
                 painter:
                     CircleProgressPainter(
                   progress:
                       progress,
-                  color: color,
+                  color:
+                      color,
                 ),
-                child: Center(
-                  child: Column(
+                child:
+                    Center(
+                  child:
+                      Column(
                     mainAxisAlignment:
                         MainAxisAlignment
                             .center,
@@ -2013,7 +2814,8 @@ class CircleProgressPainter
     Canvas canvas,
     Size size,
   ) {
-    final center = Offset(
+    final center =
+        Offset(
       size.width / 2,
       size.height / 2,
     );
@@ -2024,19 +2826,24 @@ class CircleProgressPainter
     final backgroundPaint =
         Paint()
           ..color =
-              const Color(0xFF303743)
+              const Color(
+            0xFF303743,
+          )
           ..style =
               PaintingStyle.stroke
-          ..strokeWidth = 12
+          ..strokeWidth =
+              12
           ..strokeCap =
               StrokeCap.round;
 
     final progressPaint =
         Paint()
-          ..color = color
+          ..color =
+              color
           ..style =
               PaintingStyle.stroke
-          ..strokeWidth = 12
+          ..strokeWidth =
+              12
           ..strokeCap =
               StrokeCap.round;
 
@@ -2048,14 +2855,18 @@ class CircleProgressPainter
 
     canvas.drawArc(
       Rect.fromCircle(
-        center: center,
-        radius: radius,
+        center:
+            center,
+        radius:
+            radius,
       ),
       -math.pi / 2,
       2 *
           math.pi *
           progress.clamp(
-              0.0, 1.0),
+            0.0,
+            1.0,
+          ),
       false,
       progressPaint,
     );
@@ -2068,7 +2879,8 @@ class CircleProgressPainter
   ) {
     return oldDelegate.progress !=
             progress ||
-        oldDelegate.color != color;
+        oldDelegate.color !=
+            color;
   }
 }
 
@@ -2093,23 +2905,32 @@ class StatusCard
 
   @override
   Widget build(
-      BuildContext context) {
+    BuildContext context,
+  ) {
     return Container(
       height: 126,
       padding:
-          const EdgeInsets.all(10),
+          const EdgeInsets.all(
+        10,
+      ),
       decoration:
           BoxDecoration(
         color:
             const Color(0xFF151B25),
         borderRadius:
-            BorderRadius.circular(15),
-        border: Border.all(
+            BorderRadius.circular(
+          15,
+        ),
+        border:
+            Border.all(
           color:
-              const Color(0xFF29313D),
+              const Color(
+            0xFF29313D,
+          ),
         ),
       ),
-      child: Column(
+      child:
+          Column(
         mainAxisAlignment:
             MainAxisAlignment.center,
         children: [
@@ -2118,19 +2939,25 @@ class StatusCard
             height: 45,
             decoration:
                 BoxDecoration(
-              color: Colors.white,
+              color:
+                  Colors.white,
               borderRadius:
                   BorderRadius.circular(
-                      11),
+                11,
+              ),
             ),
-            child: Icon(
+            child:
+                Icon(
               icon,
-              color: iconColor,
+              color:
+                  iconColor,
               size: 27,
             ),
           ),
 
-          const SizedBox(height: 5),
+          const SizedBox(
+            height: 5,
+          ),
 
           Text(
             title,
@@ -2141,18 +2968,22 @@ class StatusCard
                 TextOverflow.ellipsis,
             style:
                 const TextStyle(
-              color: Colors.white70,
+              color:
+                  Colors.white70,
               fontSize: 11,
             ),
           ),
 
-          const SizedBox(height: 2),
+          const SizedBox(
+            height: 2,
+          ),
 
           Text(
             value,
             style:
                 const TextStyle(
-              color: Colors.white,
+              color:
+                  Colors.white,
               fontSize: 18,
               fontWeight:
                   FontWeight.w900,

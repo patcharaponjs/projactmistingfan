@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class DeviceScreen extends StatefulWidget {
   const DeviceScreen({super.key});
@@ -11,7 +13,30 @@ class _DeviceScreenState extends State<DeviceScreen> {
   // =====================================================
   // CONTROLLER
   // =====================================================
+Future<void> logout() async {
+  final prefs = await SharedPreferences.getInstance();
+  final deviceId = prefs.getString('smart_mist_device_id');
 
+  final user = Supabase.instance.client.auth.currentUser;
+
+  if (user != null && deviceId != null) {
+    await Supabase.instance.client
+        .from('user_devices')
+        .delete()
+        .eq('user_id', user.id)
+        .eq('device_id', deviceId);
+  }
+
+  await Supabase.instance.client.auth.signOut();
+
+  if (!mounted) return;
+
+  Navigator.pushNamedAndRemoveUntil(
+    context,
+    '/',
+    (route) => false,
+  );
+}
   final TextEditingController serialController =
       TextEditingController();
 
@@ -279,43 +304,34 @@ class _DeviceScreenState extends State<DeviceScreen> {
   // =====================================================
 
   Widget buildLogoutButton() {
-    return SizedBox(
-      width: double.infinity,
-      height: 52,
-      child: OutlinedButton.icon(
-        onPressed: () {
-          // ล้าง route ทั้งหมด
-          // แล้วกลับหน้า Login
-          Navigator.pushNamedAndRemoveUntil(
-            context,
-            '/',
-            (route) => false,
-          );
-        },
-        icon: const Icon(
-          Icons.logout,
+  return SizedBox(
+    width: double.infinity,
+    height: 52,
+    child: OutlinedButton.icon(
+      onPressed: logout,
+      icon: const Icon(
+        Icons.logout,
+        color: Color(0xFF9C6BFF),
+      ),
+      label: const Text(
+        'ออกจากระบบ',
+        style: TextStyle(
           color: Color(0xFF9C6BFF),
-        ),
-        label: const Text(
-          'ออกจากระบบ',
-          style: TextStyle(
-            color: Color(0xFF9C6BFF),
-            fontSize: 15,
-            fontWeight: FontWeight.w700,
-          ),
-        ),
-        style: OutlinedButton.styleFrom(
-          side: const BorderSide(
-            color: Color(0xFF9C6BFF),
-          ),
-          shape: RoundedRectangleBorder(
-            borderRadius:
-                BorderRadius.circular(13),
-          ),
+          fontSize: 15,
+          fontWeight: FontWeight.w700,
         ),
       ),
-    );
-  }
+      style: OutlinedButton.styleFrom(
+        side: const BorderSide(
+          color: Color(0xFF9C6BFF),
+        ),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(13),
+        ),
+      ),
+    ),
+  );
+}
 
   // =====================================================
   // BOTTOM NAVIGATION

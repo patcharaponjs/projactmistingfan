@@ -15,7 +15,7 @@ class _NotificationScreenState
     extends State<NotificationScreen> {
 
   // ==========================================
-  // รายการแจ้งเตือนจาก Supabase
+  // รายการแจ้งเตือน
   // ==========================================
 
   List<Map<String, dynamic>> notifications = [];
@@ -53,10 +53,12 @@ class _NotificationScreenState
         return;
       }
 
-      debugPrint('กำลังโหลดแจ้งเตือนของ User: ${user.id}');
+      debugPrint(
+        'กำลังโหลดแจ้งเตือนของ User: ${user.id}',
+      );
 
       final data = await supabase
-          .from('device_alerts')
+          .from('notifications')
           .select()
           .eq('user_id', user.id)
           .order('created_at', ascending: false);
@@ -64,7 +66,7 @@ class _NotificationScreenState
       final List<Map<String, dynamic>> result = [];
 
       for (final item in data) {
-        final alertType = item['alert_type'] ?? '';
+        final alertType = item['type'] ?? '';
 
         IconData icon = Icons.notifications_none;
         Color color = Colors.cyanAccent;
@@ -73,20 +75,33 @@ class _NotificationScreenState
         // ICON ตามประเภทแจ้งเตือน
         // ==========================================
 
-        if (alertType == 'device_offline') {
+        if (alertType == 'login') {
+          icon = Icons.login;
+          color = Colors.greenAccent;
+
+        } else if (alertType == 'logout') {
+          icon = Icons.logout;
+          color = Colors.orangeAccent;
+
+        } else if (alertType == 'device_offline') {
           icon = Icons.wifi_off;
           color = Colors.redAccent;
+
         } else if (alertType == 'water_low') {
           icon = Icons.water_drop_outlined;
           color = Colors.cyanAccent;
+
         } else if (alertType == 'temperature_high') {
           icon = Icons.thermostat;
           color = Colors.orangeAccent;
+
         } else if (alertType == 'humidity_high') {
           icon = Icons.water_drop;
           color = Colors.blueAccent;
+
         } else if (alertType == 'motion_detected') {
-          icon = Icons.show_chart;
+          // รูปคนเมื่อ Sensor เจอคน
+          icon = Icons.person;
           color = Colors.yellowAccent;
         }
 
@@ -107,8 +122,11 @@ class _NotificationScreenState
           isLoading = false;
         });
       }
+
     } catch (e) {
-      debugPrint('Load notifications error: $e');
+      debugPrint(
+        'Load notifications error: $e',
+      );
 
       if (mounted) {
         setState(() {
@@ -136,24 +154,23 @@ class _NotificationScreenState
     }
 
     try {
-      final date = DateTime.parse(
-        value.toString(),
-      ).toLocal();
+      final date =
+          DateTime.parse(value.toString()).toLocal();
 
-      // ค.ศ. → พ.ศ.
       final buddhistYear = date.year + 543;
 
       return '${date.day}/${date.month}/$buddhistYear '
           '${date.hour.toString().padLeft(2, '0')}:'
           '${date.minute.toString().padLeft(2, '0')}:'
           '${date.second.toString().padLeft(2, '0')}';
+
     } catch (e) {
       return value.toString();
     }
   }
 
   // ==========================================
-  // ทำเครื่องหมายว่าอ่านแล้วทั้งหมด
+  // MARK ALL AS READ
   // ==========================================
 
   Future<void> markAllAsRead() async {
@@ -165,20 +182,25 @@ class _NotificationScreenState
 
     try {
       await supabase
-          .from('device_alerts')
+          .from('notifications')
           .update({
-            'is_read': true,
-          })
+        'is_read': true,
+      })
           .eq('user_id', user.id)
           .eq('is_read', false);
 
-      setState(() {
-        for (var item in notifications) {
-          item['read'] = true;
-        }
-      });
+      if (mounted) {
+        setState(() {
+          for (var item in notifications) {
+            item['read'] = true;
+          }
+        });
+      }
 
-      debugPrint('ทำเครื่องหมายอ่านทั้งหมดแล้ว');
+      debugPrint(
+        'ทำเครื่องหมายอ่านทั้งหมดแล้ว',
+      );
+
     } catch (e) {
       debugPrint(
         'Mark all as read error: $e',
@@ -197,7 +219,7 @@ class _NotificationScreenState
   }
 
   // ==========================================
-  // ลบทั้งหมด
+  // CLEAR ALL
   // ==========================================
 
   Future<void> clearAll() async {
@@ -207,22 +229,26 @@ class _NotificationScreenState
       return;
     }
 
-    // ถ้าไม่มีข้อมูล
     if (notifications.isEmpty) {
       return;
     }
 
     try {
       await supabase
-          .from('device_alerts')
+          .from('notifications')
           .delete()
           .eq('user_id', user.id);
 
-      setState(() {
-        notifications.clear();
-      });
+      if (mounted) {
+        setState(() {
+          notifications.clear();
+        });
+      }
 
-      debugPrint('ลบการแจ้งเตือนทั้งหมดแล้ว');
+      debugPrint(
+        'ลบการแจ้งเตือนทั้งหมดแล้ว',
+      );
+
     } catch (e) {
       debugPrint(
         'Clear notifications error: $e',
@@ -241,7 +267,7 @@ class _NotificationScreenState
   }
 
   // ==========================================
-  // MARK SINGLE NOTIFICATION AS READ
+  // MARK SINGLE AS READ
   // ==========================================
 
   Future<void> markAsRead(int index) async {
@@ -261,10 +287,10 @@ class _NotificationScreenState
 
     try {
       await supabase
-          .from('device_alerts')
+          .from('notifications')
           .update({
-            'is_read': true,
-          })
+        'is_read': true,
+      })
           .eq('id', id)
           .eq('user_id', user.id);
 
@@ -273,6 +299,7 @@ class _NotificationScreenState
           notifications[index]['read'] = true;
         });
       }
+
     } catch (e) {
       debugPrint(
         'Mark notification read error: $e',
@@ -281,7 +308,7 @@ class _NotificationScreenState
   }
 
   // ==========================================
-  // จำนวนที่ยังไม่ได้อ่าน
+  // UNREAD COUNT
   // ==========================================
 
   int get unreadCount {
@@ -326,7 +353,6 @@ class _NotificationScreenState
                     child: Row(
                       children: [
 
-                        // ปุ่มย้อนกลับ
                         GestureDetector(
                           onTap: () {
                             Navigator.pop(context);
@@ -353,7 +379,6 @@ class _NotificationScreenState
 
                         const SizedBox(width: 18),
 
-                        // ชื่อหน้า
                         Expanded(
                           child: Column(
                             crossAxisAlignment:
@@ -386,7 +411,6 @@ class _NotificationScreenState
                           ),
                         ),
 
-                        // กระดิ่ง
                         Container(
                           width: 62,
                           height: 62,
@@ -421,7 +445,6 @@ class _NotificationScreenState
                     child: Row(
                       children: [
 
-                        // ทำเครื่องหมายว่าอ่านแล้ว
                         Expanded(
                           child: SizedBox(
                             height: 58,
@@ -474,12 +497,10 @@ class _NotificationScreenState
 
                         const SizedBox(width: 14),
 
-                        // ล้างทั้งหมด
                         SizedBox(
                           height: 58,
 
-                          child:
-                              OutlinedButton.icon(
+                          child: OutlinedButton.icon(
                             onPressed:
                                 notifications.isEmpty
                                     ? null
@@ -527,7 +548,7 @@ class _NotificationScreenState
                   const SizedBox(height: 18),
 
                   // ====================================
-                  // NOTIFICATION LIST
+                  // LIST
                   // ====================================
 
                   Expanded(
@@ -602,7 +623,6 @@ class _NotificationScreenState
 
         decoration: BoxDecoration(
           color: const Color(0xFF0865A8),
-
           borderRadius:
               BorderRadius.circular(22),
         ),
@@ -685,10 +705,7 @@ class _NotificationScreenState
               ),
             ),
 
-            // =================================
-            // จุดแจ้งเตือน
-            // =================================
-
+            // จุดแจ้งเตือนที่ยังไม่อ่าน
             if (item['read'] == false)
               Container(
                 width: 12,

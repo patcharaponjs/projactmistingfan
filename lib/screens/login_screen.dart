@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'register_screen.dart';
 import 'dashboard_screen.dart';
@@ -38,6 +39,121 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   // =====================================================
+  // GET DEVICE ID
+  // =====================================================
+
+  Future<String> getDeviceId() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    String? deviceId =
+        prefs.getString('smart_mist_device_id');
+
+    if (deviceId == null || deviceId.isEmpty) {
+      deviceId =
+          'device_${DateTime.now().millisecondsSinceEpoch}';
+
+      await prefs.setString(
+        'smart_mist_device_id',
+        deviceId,
+      );
+    }
+
+    return deviceId;
+  }
+
+  // =====================================================
+  // LOGIN NOTIFICATION
+  // =====================================================
+
+  Future<void> createLoginNotification({
+    required String userId,
+    required String email,
+  }) async {
+    try {
+      await Supabase.instance.client
+          .from('notifications')
+          .insert({
+        'user_id': userId,
+        'title': 'เข้าสู่ระบบ',
+        'message': 'เข้าสู่ระบบสำเร็จด้วย $email',
+        'type': 'login',
+        'is_read': false,
+      });
+
+      debugPrint('LOGIN NOTIFICATION SUCCESS');
+    } catch (e) {
+      // ถ้าบันทึก Notification ไม่สำเร็จ
+      // จะไม่ทำให้ Login ล้มเหลว
+      debugPrint('LOGIN NOTIFICATION ERROR: $e');
+    }
+  }
+
+  // =====================================================
+  // CHECK DEVICE LIMIT
+  // =====================================================
+
+  Future<bool> checkDeviceLimit({
+    required String userId,
+  }) async {
+    final deviceId = await getDeviceId();
+
+    try {
+      // ตรวจว่าเครื่องนี้เคยลงทะเบียนแล้วหรือยัง
+      final existingDevice =
+          await Supabase.instance.client
+              .from('user_devices')
+              .select('id')
+              .eq('user_id', userId)
+              .eq('device_id', deviceId)
+              .maybeSingle();
+
+      // =================================================
+      // เครื่องเดิม
+      // =================================================
+
+      if (existingDevice != null) {
+        await Supabase.instance.client
+            .from('user_devices')
+            .update({
+          'last_seen': DateTime.now().toIso8601String(),
+        })
+            .eq('id', existingDevice['id']);
+
+        return true;
+      }
+
+      // =================================================
+      // เครื่องใหม่
+      // =================================================
+
+      final devices = await Supabase.instance.client
+          .from('user_devices')
+          .select('id')
+          .eq('user_id', userId);
+
+      // จำกัดสูงสุด 2 เครื่อง
+      if (devices.length >= 2) {
+        return false;
+      }
+
+      // เพิ่มเครื่องใหม่
+      await Supabase.instance.client
+          .from('user_devices')
+          .insert({
+        'user_id': userId,
+        'device_id': deviceId,
+        'device_name': 'Flutter Device',
+        'last_seen': DateTime.now().toIso8601String(),
+      });
+
+      return true;
+    } catch (e) {
+      debugPrint('DEVICE CHECK ERROR: $e');
+      rethrow;
+    }
+  }
+
+  // =====================================================
   // LOGIN WITH SUPABASE
   // =====================================================
 
@@ -58,6 +174,10 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
+      // =================================================
+      // SUPABASE LOGIN
+      // =================================================
+
       final response =
           await Supabase.instance.client.auth.signInWithPassword(
         email: email,
@@ -74,17 +194,60 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
 
+      // =================================================
+      // CHECK DEVICE LIMIT
+      // =================================================
+
+      final deviceAllowed = await checkDeviceLimit(
+        userId: user.id,
+      );
+
+      // =================================================
+      // เกิน 2 เครื่อง
+      // =================================================
+
+      if (!deviceAllowed) {
+        await Supabase.instance.client.auth.signOut();
+
+        if (mounted) {
+          showMessage(
+            'บัญชีนี้ใช้งานได้สูงสุด 2 เครื่อง',
+            Colors.redAccent,
+          );
+        }
+
+        return;
+      }
+
+      // =================================================
+      // LOGIN NOTIFICATION
+      // =================================================
+
+      await createLoginNotification(
+        userId: user.id,
+        email: email,
+      );
+
+      // =================================================
+      // USERNAME
+      // =================================================
+
       String username = '';
 
       final metadata = user.userMetadata;
 
-      if (metadata != null && metadata['username'] != null) {
+      if (metadata != null &&
+          metadata['username'] != null) {
         username = metadata['username'].toString();
       }
 
       if (username.isEmpty) {
         username = email.split('@').first;
       }
+
+      // =================================================
+      // GO TO DASHBOARD
+      // =================================================
 
       if (!mounted) return;
 
@@ -116,6 +279,8 @@ class _LoginScreenState extends State<LoginScreen> {
         );
       }
     } catch (e) {
+      debugPrint('LOGIN ERROR: $e');
+
       if (mounted) {
         showMessage(
           'เกิดข้อผิดพลาด กรุณาลองใหม่',
@@ -159,34 +324,27 @@ class _LoginScreenState extends State<LoginScreen> {
   }) {
     return InputDecoration(
       hintText: hint,
-
       hintStyle: const TextStyle(
         color: Colors.white38,
       ),
-
       prefixIcon: Icon(
         icon,
         color: const Color(0xFF45B9EB),
       ),
-
       filled: true,
-
       fillColor: const Color(0xFF151B25),
-
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(14),
         borderSide: const BorderSide(
           color: Color(0xFF29313D),
         ),
       ),
-
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(14),
         borderSide: const BorderSide(
           color: Color(0xFF29313D),
         ),
       ),
-
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(14),
         borderSide: const BorderSide(
@@ -205,14 +363,11 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF080D13),
-
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(28),
-
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-
             children: [
               const SizedBox(height: 30),
 
@@ -224,13 +379,10 @@ class _LoginScreenState extends State<LoginScreen> {
                 child: Container(
                   width: 85,
                   height: 85,
-
                   decoration: BoxDecoration(
                     color: const Color(0xFF087FD0),
-                    borderRadius:
-                        BorderRadius.circular(25),
+                    borderRadius: BorderRadius.circular(24),
                   ),
-
                   child: const Icon(
                     Icons.air,
                     color: Colors.white,
@@ -239,19 +391,15 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
               ),
 
-              const SizedBox(height: 20),
-
-              // =================================================
-              // APP NAME
-              // =================================================
+              const SizedBox(height: 30),
 
               const Center(
                 child: Text(
                   'Smart Mist Fan',
                   style: TextStyle(
                     color: Colors.white,
-                    fontSize: 30,
-                    fontWeight: FontWeight.w900,
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
                   ),
                 ),
               ),
@@ -260,88 +408,33 @@ class _LoginScreenState extends State<LoginScreen> {
 
               const Center(
                 child: Text(
-                  'พัดลมไอน้ำอัจฉริยะ',
+                  'เข้าสู่ระบบเพื่อควบคุมพัดลม',
                   style: TextStyle(
                     color: Colors.white54,
-                    fontSize: 16,
+                    fontSize: 14,
                   ),
                 ),
               ),
 
-              const SizedBox(height: 45),
-
-              // =================================================
-              // LOGIN TITLE
-              // =================================================
-
-              const Text(
-                'เข้าสู่ระบบ',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 28,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-
-              const SizedBox(height: 8),
-
-              const Text(
-                'เข้าสู่ระบบเพื่อควบคุมพัดลมหมอกอัจฉริยะ',
-                style: TextStyle(
-                  color: Colors.white54,
-                  fontSize: 14,
-                ),
-              ),
-
-              const SizedBox(height: 30),
-
-              // =================================================
-              // EMAIL LABEL
-              // =================================================
+              const SizedBox(height: 40),
 
               const Text(
                 'อีเมล',
                 style: TextStyle(
                   color: Colors.white,
-                  fontWeight: FontWeight.w600,
                   fontSize: 15,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
 
               const SizedBox(height: 8),
 
-              // =================================================
-              // EMAIL
-              // =================================================
-
               TextField(
                 controller: emailController,
-
-                keyboardType:
-                    TextInputType.emailAddress,
-
-                textInputAction:
-                    TextInputAction.next,
-
-                autocorrect: false,
-
-                enableSuggestions: false,
-
-                textCapitalization:
-                    TextCapitalization.none,
-
+                keyboardType: TextInputType.emailAddress,
                 style: const TextStyle(
                   color: Colors.white,
-                  fontSize: 16,
                 ),
-
-                // ป้องกัน / และ \ จากการถูกใส่เข้ามา
-                inputFormatters: [
-                  FilteringTextInputFormatter.deny(
-                    RegExp(r'[/\\]'),
-                  ),
-                ],
-
                 decoration: inputDecoration(
                   hint: 'กรอกอีเมล',
                   icon: Icons.email_outlined,
@@ -350,234 +443,110 @@ class _LoginScreenState extends State<LoginScreen> {
 
               const SizedBox(height: 20),
 
-              // =================================================
-              // PASSWORD LABEL
-              // =================================================
-
               const Text(
                 'รหัสผ่าน',
                 style: TextStyle(
                   color: Colors.white,
-                  fontWeight: FontWeight.w600,
                   fontSize: 15,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
 
               const SizedBox(height: 8),
 
-              // =================================================
-              // PASSWORD
-              // =================================================
-
               TextField(
                 controller: passwordController,
-
                 obscureText: hidePassword,
-
-                textInputAction:
-                    TextInputAction.done,
-
-                autocorrect: false,
-
-                enableSuggestions: false,
-
-                textCapitalization:
-                    TextCapitalization.none,
-
                 style: const TextStyle(
                   color: Colors.white,
-                  fontSize: 16,
                 ),
-
-                // ป้องกัน / และ \ จากการถูกใส่เข้ามา
-                inputFormatters: [
-                  FilteringTextInputFormatter.deny(
-                    RegExp(r'[/\\]'),
-                  ),
-                ],
-
-                onSubmitted: (_) {
-                  if (!isLoading) {
-                    login();
-                  }
-                },
-
                 decoration: inputDecoration(
                   hint: 'กรอกรหัสผ่าน',
                   icon: Icons.lock_outline,
                 ).copyWith(
                   suffixIcon: IconButton(
-                    onPressed: () {
-                      setState(() {
-                        hidePassword =
-                            !hidePassword;
-                      });
-                    },
-
                     icon: Icon(
                       hidePassword
-                          ? Icons.visibility_off_outlined
-                          : Icons.visibility_outlined,
+                          ? Icons.visibility_off
+                          : Icons.visibility,
                       color: Colors.white54,
                     ),
+                    onPressed: () {
+                      setState(() {
+                        hidePassword = !hidePassword;
+                      });
+                    },
                   ),
                 ),
               ),
 
               const SizedBox(height: 30),
 
-              // =================================================
-              // LOGIN BUTTON
-              // =================================================
-
               SizedBox(
                 width: double.infinity,
                 height: 55,
-
                 child: ElevatedButton(
-                  onPressed:
-                      isLoading ? null : login,
-
-                  style:
-                      ElevatedButton.styleFrom(
+                  onPressed: isLoading ? null : login,
+                  style: ElevatedButton.styleFrom(
                     backgroundColor:
                         const Color(0xFF087FD0),
-
                     disabledBackgroundColor:
                         const Color(0xFF087FD0)
-                            .withOpacity(.5),
-
-                    foregroundColor:
-                        Colors.white,
-
-                    elevation: 0,
-
-                    shape:
-                        RoundedRectangleBorder(
+                            .withOpacity(0.5),
+                    shape: RoundedRectangleBorder(
                       borderRadius:
                           BorderRadius.circular(14),
                     ),
                   ),
-
                   child: isLoading
                       ? const SizedBox(
                           width: 24,
                           height: 24,
-
                           child:
                               CircularProgressIndicator(
+                            strokeWidth: 2,
                             color: Colors.white,
-                            strokeWidth: 2.5,
                           ),
                         )
                       : const Text(
                           'เข้าสู่ระบบ',
                           style: TextStyle(
+                            color: Colors.white,
                             fontSize: 17,
-                            fontWeight:
-                                FontWeight.w800,
+                            fontWeight: FontWeight.bold,
                           ),
                         ),
                 ),
               ),
 
-              const SizedBox(height: 25),
+              const SizedBox(height: 20),
 
-              // =================================================
-              // OR
-              // =================================================
-
-              Row(
-                children: [
-                  const Expanded(
-                    child: Divider(
-                      color: Color(0xFF29313D),
-                    ),
-                  ),
-
-                  Padding(
-                    padding:
-                        const EdgeInsets.symmetric(
-                      horizontal: 15,
-                    ),
-
-                    child: Text(
-                      'หรือ',
-
-                      style: TextStyle(
-                        color: Colors.white
-                            .withOpacity(.45),
-                      ),
-                    ),
-                  ),
-
-                  const Expanded(
-                    child: Divider(
-                      color: Color(0xFF29313D),
-                    ),
-                  ),
-                ],
-              ),
-
-              const SizedBox(height: 25),
-
-              // =================================================
-              // REGISTER BUTTON
-              // =================================================
-
-              SizedBox(
-                width: double.infinity,
-                height: 52,
-
-                child: OutlinedButton(
+              Center(
+                child: TextButton(
                   onPressed: () {
                     Navigator.push(
                       context,
-
                       MaterialPageRoute(
                         builder: (context) =>
                             const RegisterScreen(),
                       ),
                     );
                   },
-
-                  style:
-                      OutlinedButton.styleFrom(
-                    side: const BorderSide(
-                      color: Color(0xFF39B9F0),
-                      width: 1.5,
-                    ),
-
-                    shape:
-                        RoundedRectangleBorder(
-                      borderRadius:
-                          BorderRadius.circular(14),
-                    ),
-                  ),
-
                   child: const Text(
-                    'สร้างบัญชี',
-
+                    'ยังไม่มีบัญชี? สมัครสมาชิก',
                     style: TextStyle(
-                      color: Color(0xFF39B9F0),
-                      fontSize: 16,
-                      fontWeight:
-                          FontWeight.bold,
+                      color: Color(0xFF45B9EB),
+                      fontSize: 14,
                     ),
                   ),
                 ),
               ),
 
-              const SizedBox(height: 30),
-
-              // =================================================
-              // FOOTER
-              // =================================================
+              const SizedBox(height: 40),
 
               const Center(
                 child: Text(
                   'Smart Mist Fan IoT',
-
                   style: TextStyle(
                     color: Colors.white30,
                     fontSize: 13,

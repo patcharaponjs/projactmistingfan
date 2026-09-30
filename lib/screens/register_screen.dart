@@ -54,7 +54,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
     final name = nameController.text.trim();
     final email = emailController.text.trim();
     final password = passwordController.text;
-    final confirmPassword = confirmPasswordController.text;
+    final confirmPassword =
+        confirmPasswordController.text;
 
     // ===================================================
     // VALIDATE
@@ -76,7 +77,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
       return;
     }
 
-    if (!email.contains('@') || !email.contains('.')) {
+    if (!email.contains('@') ||
+        !email.contains('.')) {
       showMessage(
         'กรุณากรอกอีเมลให้ถูกต้อง',
         Colors.redAccent,
@@ -128,6 +130,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
       // =================================================
       // SUPABASE SIGN UP
       // =================================================
+      //
+      // username จะถูกเก็บไว้ใน user_metadata
+      // ไม่ต้องบันทึก password ลง profiles
+      //
+      // =================================================
 
       final response =
           await Supabase.instance.client.auth.signUp(
@@ -140,63 +147,23 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
       final user = response.user;
 
+      // =================================================
+      // CHECK USER
+      // =================================================
+
       if (user == null) {
-        throw Exception('สมัครสมาชิกไม่สำเร็จ');
+        throw Exception(
+          'Supabase ไม่สามารถสร้างบัญชีได้',
+        );
       }
 
       debugPrint('================================');
-      debugPrint('USER CREATED');
+      debugPrint('USER CREATED SUCCESSFULLY');
       debugPrint('USER ID: ${user.id}');
       debugPrint('EMAIL: ${user.email}');
       debugPrint('USERNAME: $name');
+      debugPrint('SESSION: ${response.session != null}');
       debugPrint('================================');
-
-      // =================================================
-      // UPDATE PROFILES
-      // =================================================
-      //
-      // Trigger ของ Supabase อาจสร้าง profiles
-      // ให้ก่อนแล้ว ดังนั้นเราใช้ UPDATE
-      // เพื่อเติม username / email / password
-      //
-      // =================================================
-
-      try {
-        final supabase = Supabase.instance.client;
-
-        final session = supabase.auth.currentSession;
-
-        debugPrint('SESSION = $session');
-
-        if (session == null) {
-          throw Exception(
-            'ไม่มี Session หลังสมัครสมาชิก '
-            'กรุณาปิด Confirm email ใน Supabase',
-          );
-        }
-
-        final result = await supabase
-            .from('profiles')
-            .update({
-          'username': name,
-          'email': email,
-          'password': password,
-        })
-            .eq('id', user.id)
-            .select('id, username, email, password');
-
-        debugPrint('================================');
-        debugPrint('PROFILE UPDATE RESULT');
-        debugPrint('$result');
-        debugPrint('================================');
-      } catch (e) {
-        debugPrint('================================');
-        debugPrint('PROFILE UPDATE ERROR');
-        debugPrint('$e');
-        debugPrint('================================');
-
-        rethrow;
-      }
 
       // =================================================
       // SUCCESS
@@ -209,11 +176,16 @@ class _RegisterScreenState extends State<RegisterScreen> {
         Colors.green,
       );
 
+      // รอให้ผู้ใช้เห็นข้อความ
       await Future.delayed(
         const Duration(milliseconds: 1000),
       );
 
       if (!mounted) return;
+
+      // =================================================
+      // BACK TO LOGIN
+      // =================================================
 
       Navigator.pop(context);
     } on AuthException catch (e) {
@@ -221,21 +193,35 @@ class _RegisterScreenState extends State<RegisterScreen> {
       // SUPABASE AUTH ERROR
       // =================================================
 
-      final error = e.message.toLowerCase();
+      debugPrint('================================');
+      debugPrint('SUPABASE AUTH ERROR');
+      debugPrint('MESSAGE: ${e.message}');
+      debugPrint('STATUS: ${e.statusCode}');
+      debugPrint('================================');
 
-      String message = 'สมัครสมาชิกไม่สำเร็จ';
+      final error =
+          e.message.toLowerCase();
+
+      String message =
+          'สมัครสมาชิกไม่สำเร็จ';
 
       if (error.contains('already registered') ||
-          error.contains('user already exists')) {
+          error.contains('user already exists') ||
+          error.contains('already been registered')) {
         message = 'อีเมลนี้ถูกใช้งานแล้ว';
       } else if (error.contains('invalid email')) {
         message = 'รูปแบบอีเมลไม่ถูกต้อง';
       } else if (error.contains('password')) {
         message = 'รหัสผ่านไม่ถูกต้อง';
       } else if (error.contains('rate limit')) {
-        message = 'สมัครบ่อยเกินไป กรุณารอสักครู่';
+        message =
+            'สมัครบ่อยเกินไป กรุณารอสักครู่';
+      } else if (error.contains('signup')) {
+        message =
+            'ไม่สามารถสมัครสมาชิกได้ กรุณาตรวจสอบ Supabase';
       } else {
-        message = 'สมัครไม่สำเร็จ: ${e.message}';
+        message =
+            'สมัครไม่สำเร็จ: ${e.message}';
       }
 
       if (mounted) {
@@ -249,9 +235,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
       // GENERAL ERROR
       // =================================================
 
-      debugPrint(
-        'Create account error: $e',
-      );
+      debugPrint('================================');
+      debugPrint('CREATE ACCOUNT ERROR');
+      debugPrint('$e');
+      debugPrint('================================');
 
       if (mounted) {
         showMessage(
@@ -318,28 +305,32 @@ class _RegisterScreenState extends State<RegisterScreen> {
       fillColor: const Color(0xFF151B25),
 
       border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius:
+            BorderRadius.circular(14),
         borderSide: const BorderSide(
           color: Color(0xFF29313D),
         ),
       ),
 
       enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius:
+            BorderRadius.circular(14),
         borderSide: const BorderSide(
           color: Color(0xFF29313D),
         ),
       ),
 
       focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius:
+            BorderRadius.circular(14),
         borderSide: const BorderSide(
           color: Color(0xFF39B9F0),
           width: 2,
         ),
       ),
 
-      contentPadding: const EdgeInsets.symmetric(
+      contentPadding:
+          const EdgeInsets.symmetric(
         horizontal: 16,
         vertical: 16,
       ),
@@ -353,10 +344,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF080D13),
+      backgroundColor:
+          const Color(0xFF080D13),
 
       appBar: AppBar(
-        backgroundColor: const Color(0xFF151B25),
+        backgroundColor:
+            const Color(0xFF151B25),
         elevation: 0,
 
         leading: IconButton(
@@ -381,7 +374,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(
+          padding:
+              const EdgeInsets.fromLTRB(
             24,
             20,
             24,
@@ -452,13 +446,21 @@ class _RegisterScreenState extends State<RegisterScreen> {
               const SizedBox(height: 8),
 
               TextField(
-                controller: nameController,
+                controller:
+                    nameController,
+
                 obscureText: false,
-                keyboardType: TextInputType.text,
+
+                keyboardType:
+                    TextInputType.text,
+
                 textInputAction:
                     TextInputAction.next,
+
                 autocorrect: false,
+
                 enableSuggestions: true,
+
                 textCapitalization:
                     TextCapitalization.none,
 
@@ -467,9 +469,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   fontSize: 16,
                 ),
 
-                decoration: inputDecoration(
+                decoration:
+                    inputDecoration(
                   hint: 'กรอกชื่อผู้ใช้',
-                  icon: Icons.person_outline,
+                  icon:
+                      Icons.person_outline,
                 ),
               ),
 
@@ -491,14 +495,21 @@ class _RegisterScreenState extends State<RegisterScreen> {
               const SizedBox(height: 8),
 
               TextField(
-                controller: emailController,
+                controller:
+                    emailController,
+
                 obscureText: false,
+
                 keyboardType:
                     TextInputType.emailAddress,
+
                 textInputAction:
                     TextInputAction.next,
+
                 autocorrect: false,
+
                 enableSuggestions: false,
+
                 textCapitalization:
                     TextCapitalization.none,
 
@@ -507,9 +518,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   fontSize: 16,
                 ),
 
-                decoration: inputDecoration(
+                decoration:
+                    inputDecoration(
                   hint: 'กรอกอีเมล',
-                  icon: Icons.email_outlined,
+                  icon:
+                      Icons.email_outlined,
                 ),
               ),
 
@@ -531,9 +544,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
               const SizedBox(height: 8),
 
               TextField(
-                controller: passwordController,
+                controller:
+                    passwordController,
 
-                obscureText: hidePassword,
+                obscureText:
+                    hidePassword,
 
                 obscuringCharacter: '•',
 
@@ -555,9 +570,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 decoration:
                     inputDecoration(
                   hint: 'กรอกรหัสผ่าน',
-                  icon: Icons.lock_outline,
+                  icon:
+                      Icons.lock_outline,
                 ).copyWith(
-                  suffixIcon: IconButton(
+                  suffixIcon:
+                      IconButton(
                     onPressed: () {
                       setState(() {
                         hidePassword =
@@ -571,7 +588,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
                               .visibility_off_outlined
                           : Icons
                               .visibility_outlined,
-                      color: Colors.white54,
+                      color:
+                          Colors.white54,
                     ),
                   ),
                 ),
@@ -620,10 +638,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
                 decoration:
                     inputDecoration(
-                  hint: 'กรอกรหัสผ่านอีกครั้ง',
-                  icon: Icons.lock_reset_outlined,
+                  hint:
+                      'กรอกรหัสผ่านอีกครั้ง',
+                  icon:
+                      Icons.lock_reset_outlined,
                 ).copyWith(
-                  suffixIcon: IconButton(
+                  suffixIcon:
+                      IconButton(
                     onPressed: () {
                       setState(() {
                         hideConfirmPassword =
@@ -637,7 +658,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
                               .visibility_off_outlined
                           : Icons
                               .visibility_outlined,
-                      color: Colors.white54,
+                      color:
+                          Colors.white54,
                     ),
                   ),
                 ),
@@ -662,10 +684,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   style:
                       ElevatedButton.styleFrom(
                     backgroundColor:
-                        const Color(0xFF087FD0),
+                        const Color(
+                            0xFF087FD0),
 
                     disabledBackgroundColor:
-                        const Color(0xFF087FD0)
+                        const Color(
+                                0xFF087FD0)
                             .withOpacity(.5),
 
                     foregroundColor:
@@ -676,7 +700,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     shape:
                         RoundedRectangleBorder(
                       borderRadius:
-                          BorderRadius.circular(14),
+                          BorderRadius.circular(
+                              14),
                     ),
                   ),
 
@@ -687,7 +712,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
                           child:
                               CircularProgressIndicator(
-                            color: Colors.white,
+                            color:
+                                Colors.white,
                             strokeWidth: 2.5,
                           ),
                         )
@@ -710,18 +736,19 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
               Center(
                 child: TextButton(
-                  onPressed: isLoading
-                      ? null
-                      : () {
-                          Navigator.pop(
-                            context,
-                          );
-                        },
+                  onPressed:
+                      isLoading
+                          ? null
+                          : () {
+                              Navigator.pop(
+                                  context);
+                            },
 
                   child: const Text(
                     'มีบัญชีอยู่แล้ว? เข้าสู่ระบบ',
                     style: TextStyle(
-                      color: Color(0xFF39B9F0),
+                      color:
+                          Color(0xFF39B9F0),
                       fontSize: 15,
                       fontWeight:
                           FontWeight.w700,
